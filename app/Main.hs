@@ -1,4 +1,5 @@
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DeriveFunctor #-}
 
 module Main where
 
@@ -20,7 +21,7 @@ main :: IO ()
 main = do
   startGUI defaultConfig setup
 
-canvasSize = 800
+canvasSize = 700
 
 lineHeight = 30
 
@@ -45,7 +46,6 @@ setup window = do
         canvas # UI.clearCanvas
         let ss = lines $ show $ pp $ zp v
         sequence_ [ canvas # UI.fillText s (10,y) | (s,y) <- zip ss [60, 60 + lineHeight .. ] ]
-        -- canvas # draw (zp v) (10, 60)
         canvas # UI.fillText (unwords [show i, show (move v), show (shift v)]) (10,520)
         
   on UI.keydown bdy $ \i -> do
@@ -68,7 +68,7 @@ data ShiftMode = NoShift | Shift | CapsLock deriving (Show, Eq)
 data St = St
   { move :: MoveMode
   , shift :: ShiftMode
-  , zp :: Z Char
+  , zp :: Z String
   }
 
 type M a = State St a
@@ -118,8 +118,10 @@ actionf i st
   -- | i == 46 = modZ del
   | mv == Move = case c of
       -- 'a' -> modZ moveBegin
-      -- 'f' -> modZ moveRight
-      -- 'j' -> modZ moveLeft
+      'j' -> modZ moveRight
+      'f' -> modZ moveLeft
+      'k' -> modZ moveDown
+      'd' -> modZ moveUp
       -- ';' -> modZ moveEnd
       _ -> st
   -- | sh == NoShift = insert c
@@ -136,68 +138,58 @@ actionf i st
     c :: Char = toEnum i
     -- z@(Z a b) = zp st
     mv = move st
-    -- modZ f = st{ zp = f $ zp st }
+    modZ f = st{ zp = f $ zp st }
 
 upperTbl = zip "`1234567890-=[]\\;',./" "~!@#$%^&*()_+{}|:\"<>?"
 
--- f i z@(Z a b) = case i of
---   _ | c == 'A' -> 
---   _ | c == 'F' -> 
---   _ | c == 'J' -> 
---   186 -> 
---   _ | isUpper c -> moveRight $ Z a (toLower c : b)
---   _ | isDigit c -> 
-  
---   _ -> moveRight $ Z a (c : b)
---   where
---     c = toEnum i
-
--- class Draw a where draw :: a -> UI.Point -> UI.Canvas -> UI ()
--- instance Draw Char where draw c = UI.fillText [c]
-
 class PP a where pp :: a -> Doc
 
-instance PP Char where pp c = char c
+instance PP Char where pp = char
+instance PP a => PP [a] where pp = hcat . map pp
 
 data Tree a = T a ([Tree a], [Tree a])
-  deriving Show
+  deriving (Show, Functor)
 
 data Z a = Z
   { down :: ([Tree a], [Tree a])
   , up :: [Tree a]
   , horiz :: ([Tree a], [Tree a])
   , val :: a
-  } deriving Show
+  } deriving (Show, Functor)
 
-ppTree x ys = x $+$ (nest 4 $ vcat ys)
+instance PP Doc where pp = id
 
 instance PP a => PP (Tree a) where
-  pp (T a (bs, cs)) = ppTree (pp a) $ map pp bs ++ map pp cs
+  pp (T a (bs, cs)) = pp a $+$ (nest 4 $ vcat $ map pp bs ++ map pp cs)
 
 instance PP a => PP (Z a) where
-  pp x = ppTree (hcat [ text ">", pp $ val x]) $ map pp $ lChilds x ++ rChilds x
-   
--- instance Draw a => Draw (Tree a) where
--- instance Draw a => Draw (Z a) where
+  pp x = pp $ T (val b) (down b)
+   where
+     a = fmap pp x
+     b = moveUp $ moveUp $ a{ val = hcat [ val a, text "<" ] }
 
 -- data Z a = Z [a] [a]
 -- instance PP a => PP (Z a) where
 --   pp (Z a b) = concatMap pp (reverse a) ++ "_" ++ concatMap pp b
 
-a = mkT 'a' [b,c]
-b = mkT 'b' []
-c = mkT 'c' [d,e]
-d = mkT 'd' []
-e = mkT 'e' []
+a = mkT "hello" [b,c]
+b = mkT "world" []
+c = mkT "how" [d,e]
+d = mkT "are" []
+e = mkT "you?" []
 
 mkT a bs = T a ([], bs)
 
+toZ :: Tree a -> Z a
 toZ (T a b) = Z
   { down = b
   , up = []
   , horiz = ([], [])
   , val = a
   }
+
+left = fst . horiz
+right = snd . horiz
 
 moveDown z = case down z of
   ([], []) -> z
@@ -209,24 +201,27 @@ moveDown z = case down z of
     }
   _ -> moveLeft $ moveDown z
 
-left = fst . horiz
-right = snd . horiz
-lChilds = fst . down
-rChilds = snd . down
-
 moveUp z = case up z of
   [] -> z
   T a b : cs -> Z
     { horiz = b
     , val = a
-    , up = up z
+    , up = cs
     , down = (left z, T (val z) (down z) : right z)
     }
 
 moveLeft z = case horiz z of
-  (a : bs, c) -> z{ horiz = (bs, a : c) }
-  _ -> z
+  (T a b : cs, ds) -> z
+    { horiz = (cs, T (val z) (down z) : ds)
+    , val = a
+    , down = b
+    }
+  _ -> moveUp z
 
 moveRight z = case horiz z of
-  (bs, c : ds) -> z{ horiz = (c : bs, ds) }
-  _ -> z
+  (ds, T a b : cs) -> z
+    { horiz = (T (val z) (down z) : ds, cs)
+    , val = a
+    , down = b
+    }
+  _ -> moveDown z
